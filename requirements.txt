@@ -1,0 +1,8 @@
+requirements.txt
+streamlit
+numpy
+pandas
+plotly
+yfinance
+yahooquery
+google-generativeai
