@@ -9,7 +9,7 @@ import streamlit as st
 import yfinance as yf
 from yahooquery import Ticker as YQTicker
 
-APP_VERSION = "FinanzasUP v9.2 — Gemini + UI pulida (fix IDs)"
+APP_VERSION = "FinanzasUP v9.2 — Gemini + UI pulida (fix IDs + tz)"
 
 pio.templates.default = "plotly_dark"
 
@@ -65,7 +65,6 @@ def init_gemini(api_key: str | None):
         return None
     try:
         genai.configure(api_key=api_key)
-        # Modelo correctamente referenciado para google-generativeai
         return genai.GenerativeModel("models/gemini-1.5-flash")
     except Exception:
         return None
@@ -84,10 +83,8 @@ def translate_with_gemini(model, text: str, target_lang: str = "es") -> str:
         resp = model.generate_content(prompt)
         txt = getattr(resp, "text", "") or ""
         txt = txt.strip()
-        # Si por alguna razón viene vacío, devolvemos el original
         return txt if txt else text
     except Exception:
-        # Si Gemini falla, dejamos el texto original
         return text
 
 
@@ -119,6 +116,11 @@ def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = np.nan
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    # ✅ FIX: forzar todas las fechas a ser "sin zona horaria"
+    # Esto evita el error "Cannot join tz-naive with tz-aware DatetimeIndex"
+    df["Date"] = df["Date"].dt.tz_localize(None)
+
     for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
         df[c] = _to_1d_numeric(df[c])
 
@@ -1097,5 +1099,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
