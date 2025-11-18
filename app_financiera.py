@@ -94,6 +94,54 @@ def _to_1d_numeric(x):
     return pd.to_numeric(getattr(x, "squeeze", lambda: x)(), errors="coerce")
 
 
+def _normalize_tz_index(series: pd.Series) -> pd.Series:
+    """Devuelve la serie con índice tz-naive (sin zona horaria)."""
+    if isinstance(series.index, pd.DatetimeIndex) and series.index.tz is not None:
+        s = series.copy()
+        s.index = s.index.tz_convert(None)
+        return s
+    return series
+
+
+def safe_corr(a: pd.Series, b: pd.Series) -> float:
+    """
+    Correlación robusta que evita errores tz-naive/tz-aware.
+    Si algo sale mal, devuelve np.nan en lugar de tirar la app.
+    """
+    try:
+        if a is None or b is None:
+            return np.nan
+
+        a = pd.Series(a).dropna()
+        b = pd.Series(b).dropna()
+
+        if a.empty or b.empty:
+            return np.nan
+
+        a = _normalize_tz_index(a)
+        b = _normalize_tz_index(b)
+
+        if isinstance(a.index, pd.DatetimeIndex) and isinstance(b.index, pd.DatetimeIndex):
+            common_idx = a.index.intersection(b.index)
+            if common_idx.size == 0:
+                return np.nan
+            a_vals = a.loc[common_idx].values
+            b_vals = b.loc[common_idx].values
+        else:
+            n = min(len(a), len(b))
+            if n < 2:
+                return np.nan
+            a_vals = a.iloc[:n].values
+            b_vals = b.iloc[:n].values
+
+        if a_vals.size < 2:
+            return np.nan
+
+        return float(np.corrcoef(a_vals, b_vals)[0, 1])
+    except Exception:
+        return np.nan
+
+
 def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     cols_final = ["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"]
     if df is None or df.empty:
@@ -117,9 +165,15 @@ def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
-    # ✅ FIX: forzar todas las fechas a ser "sin zona horaria"
-    # Esto evita el error "Cannot join tz-naive with tz-aware DatetimeIndex"
-    df["Date"] = df["Date"].dt.tz_localize(None)
+    # Normalizar zona horaria de las fechas (si traen tz, se la quitamos)
+    try:
+        df["Date"] = df["Date"].dt.tz_convert(None)
+    except TypeError:
+        try:
+            df["Date"] = df["Date"].dt.tz_localize(None)
+        except TypeError:
+            # Ya era tz-naive, lo dejamos así
+            pass
 
     for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
         df[c] = _to_1d_numeric(df[c])
@@ -275,6 +329,8 @@ def var_es(returns: pd.Series, level: float = 0.95) -> tuple[float, float]:
 
 
 def beta_vs_benchmark(asset_ret: pd.Series, bench_ret: pd.Series) -> float:
+    asset_ret = _normalize_tz_index(asset_ret.dropna())
+    bench_ret = _normalize_tz_index(bench_ret.dropna())
     joined = pd.concat([asset_ret, bench_ret], axis=1, join="inner").dropna()
     if joined.shape[0] < 3:
         return np.nan
@@ -286,6 +342,8 @@ def beta_vs_benchmark(asset_ret: pd.Series, bench_ret: pd.Series) -> float:
 
 
 def rolling_beta_series(asset_ret: pd.Series, bench_ret: pd.Series, window: int = 63) -> pd.Series:
+    asset_ret = _normalize_tz_index(asset_ret.dropna())
+    bench_ret = _normalize_tz_index(bench_ret.dropna())
     joined = pd.concat([asset_ret, bench_ret], axis=1, join="inner").dropna()
     if joined.empty:
         return pd.Series(dtype=float)
@@ -618,6 +676,7 @@ def main() -> None:
 
     price_col = "Adj Close" if show_adj and "Adj Close" in df.columns else "Close"
     price_series = df.set_index("Date")[price_col]
+    price_series = _normalize_tz_index(price_series)
     ret = pct_change(price_series)
 
     # Benchmark
@@ -635,6 +694,7 @@ def main() -> None:
     if not bench_df.empty:
         bench_price_col = "Adj Close" if show_adj and "Adj Close" in bench_df.columns else "Close"
         bench_price_series = bench_df.set_index("Date")[bench_price_col]
+        bench_price_series = _normalize_tz_index(bench_price_series)
         bench_ret = pct_change(bench_price_series)
 
     # Métricas del activo principal
@@ -647,7 +707,7 @@ def main() -> None:
     cagr_value = cagr(ret, interval)
     sortino_value = sortino_ratio(ret, interval, rf)
     calmar_value = calmar_ratio(cagr_value, mdd)
-    corr_value = ret.corr(bench_ret) if not bench_ret.empty else np.nan
+    corr_value = safe_corr(ret, bench_ret)
     rolling_beta = rolling_beta_series(ret, bench_ret, window=63) if not bench_ret.empty else pd.Series(dtype=float)
 
     # Escenario simulado
@@ -693,6 +753,7 @@ def main() -> None:
             continue
         sym_price_col = "Adj Close" if show_adj and "Adj Close" in sym_df.columns else "Close"
         sym_price_series = sym_df.set_index("Date")[sym_price_col]
+        sym_price_series = _normalize_tz_index(sym_price_series)
         sym_ret = pct_change(sym_price_series)
         if sym_ret.empty:
             continue
@@ -1099,4 +1160,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
